@@ -24,7 +24,7 @@ app.use(express.json());
 // ────────────────────────────────────────────────────────────────────────────
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY || 'mykey123';
-const TURNSTILE_API_URL = process.env.TURNSTILE_API_URL || 'https://cf-rp12.onrender.com/cf-clearance-scraper';
+const TURNSTILE_API_URL = process.env.TURNSTILE_API_URL || 'https://yoursminato-cloud.hf.space/cf-clearance-scraper';
 const PORT = process.env.PORT || 3000;
 const TOKEN_CACHE_TTL = 60 * 1000; // 60 seconds
 const TOKEN_GENERATION_TIME = 30 * 1000; // 30 seconds per token (for ETA calculation)
@@ -101,7 +101,7 @@ async function solveTurnstile() {
         'User-Agent': ua,
       },
       body: JSON.stringify({
-        url: 'https://studyspark.site/player',
+        url: 'https://pw-olive-kappa.vercel.app',
         siteKey: '0x4AAAAAACqytllG1rHL_Acz',
         mode: 'turnstile-min',
       }),
