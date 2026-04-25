@@ -1,5 +1,5 @@
 /**
- * Queue Service - Render Deployment
+ * Queue Service - Render Deployment (Updated)
  * 
  * Manages a fair queue system with Turnstile token generation.
  * - One IP address = one queue entry at a time
@@ -10,7 +10,10 @@
  * Deploy to Render with environment variables:
  *   PRIVATE_KEY=mykey123
  *   TURNSTILE_API_URL=https://cf-rp12.onrender.com/cf-clearance-scraper
+ *   UPSTREAM_BASE=https://studyspark.pro
+ *   REFERRER_BASE=pw-olive-kappa.vercel.app
  *   NODE_ENV=production
+ *   PORT=3000
  */
 
 import express from 'express';
@@ -25,9 +28,13 @@ app.use(express.json());
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY || 'mykey123';
 const TURNSTILE_API_URL = process.env.TURNSTILE_API_URL || 'https://yoursminato-cloud.hf.space/cf-clearance-scraper';
+const UPSTREAM_BASE = process.env.UPSTREAM_BASE || 'https://studyspark.pro';
+const REFERRER_BASE = process.env.REFERRER_BASE || 'pw-olive-kappa.vercel.app';
 const PORT = process.env.PORT || 3000;
+
 const TOKEN_CACHE_TTL = 60 * 1000; // 60 seconds
 const TOKEN_GENERATION_TIME = 30 * 1000; // 30 seconds per token (for ETA calculation)
+const CLEANUP_INTERVAL = 60 * 1000; // Clean up expired tokens every 60s
 
 // ────────────────────────────────────────────────────────────────────────────
 // QUEUE STATE (In-memory; use Redis for production)
@@ -43,13 +50,19 @@ const processingIp = new Map(); // { ip: true } — tracks who is currently gett
 
 /**
  * Extract client IP from request, handling proxies.
+ * Supports: X-Forwarded-For, CF-Connecting-IP, direct socket
  */
 function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : forwarded[0].trim();
+  
+  const cfIp = req.headers['cf-connecting-ip'];
+  if (cfIp) return typeof cfIp === 'string' ? cfIp : cfIp[0];
+  
   return (
-    req.headers['x-forwarded-for']?.split(',')[0].trim() ||
-    req.headers['cf-connecting-ip'] ||
     req.socket.remoteAddress ||
     req.connection.remoteAddress ||
+    req.ip ||
     'unknown'
   );
 }
@@ -88,6 +101,7 @@ function getQueuePosition(ip) {
 
 /**
  * Solve Turnstile and return token.
+ * Uses configurable upstream and referrer.
  */
 async function solveTurnstile() {
   const ua = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36';
@@ -101,7 +115,7 @@ async function solveTurnstile() {
         'User-Agent': ua,
       },
       body: JSON.stringify({
-        url: 'https://pw-olive-kappa.vercel.app',
+        url: `https://${REFERRER_BASE}/player`,
         siteKey: '0x4AAAAAACqytllG1rHL_Acz',
         mode: 'turnstile-min',
       }),
@@ -163,8 +177,28 @@ async function processQueue() {
   }
 }
 
+/**
+ * Clean up expired tokens from cache.
+ */
+function cleanupExpiredTokens() {
+  const now = Date.now();
+  let removed = 0;
+  for (const [ip, cached] of Array.from(tokenCache.entries())) {
+    if (cached.expiresAt < now) {
+      tokenCache.delete(ip);
+      removed++;
+    }
+  }
+  if (removed > 0) {
+    console.log(`[Cleanup] Removed ${removed} expired tokens`);
+  }
+}
+
 // Process queue every 1 second
 setInterval(processQueue, 1000);
+
+// Cleanup expired tokens every 60 seconds
+setInterval(cleanupExpiredTokens, CLEANUP_INTERVAL);
 
 // ────────────────────────────────────────────────────────────────────────────
 // ENDPOINTS
@@ -223,6 +257,7 @@ app.post('/queue/register', (req, res) => {
  * Response:
  *   { ok: true, position: 5, eta: 150 }  // position 5, ~150 seconds ETA
  *   { ok: true, position: 0 }  // token ready for retrieval
+ *   { ok: false, error: "invalid_link", errorId: "queue_not_registered" }
  */
 app.get('/queue/status', (req, res) => {
   const ip = getClientIp(req);
@@ -324,13 +359,59 @@ app.post('/queue/reset', (req, res) => {
 });
 
 /**
- * Health check
+ * GET /health
+ * 
+ * Health check endpoint.
  */
 app.get('/health', (req, res) => {
   res.status(200).json({
     ok: true,
     queue_size: queue.size,
     cached_tokens: tokenCache.size,
+    processing: processingIp.size,
+    upstream: UPSTREAM_BASE,
+    referrer: REFERRER_BASE,
+  });
+});
+
+/**
+ * GET /
+ * 
+ * Root endpoint info.
+ */
+app.get('/', (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'PW Sphere Queue Service',
+    version: '1.0.0',
+    endpoints: [
+      'POST /queue/register',
+      'GET /queue/status',
+      'POST /queue/get-token',
+      'POST /queue/reset',
+      'GET /health',
+    ],
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// ERROR HANDLING
+// ────────────────────────────────────────────────────────────────────────────
+
+app.use((err, req, res, next) => {
+  console.error('[Error]', err.message);
+  res.status(500).json({
+    ok: false,
+    error: 'invalid_link',
+    errorId: 'internal_error',
+  });
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    ok: false,
+    error: 'invalid_link',
+    errorId: 'not_found',
   });
 });
 
@@ -338,14 +419,43 @@ app.get('/health', (req, res) => {
 // START SERVER
 // ────────────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`[Queue Service] Listening on port ${PORT}`);
-  console.log(`[Queue Service] PRIVATE_KEY configured: ${PRIVATE_KEY === 'mykey123' ? 'DEFAULT (CHANGE ME!)' : 'custom'}`);
-  console.log(`[Queue Service] Turnstile URL: ${TURNSTILE_API_URL}`);
+const server = app.listen(PORT, () => {
+  console.log(`\n╔══════════════════════════════════════════════════════════╗`);
+  console.log(`║          PW Sphere Queue Service Started                 ║`);
+  console.log(`╠══════════════════════════════════════════════════════════╣`);
+  console.log(`║ Port:              ${String(PORT).padEnd(45, ' ')}║`);
+  console.log(`║ Private Key:       ${PRIVATE_KEY === 'mykey123' ? 'DEFAULT (CHANGE!)' : 'Custom Set'} ${' '.repeat(29)}║`);
+  console.log(`║ Upstream:          ${UPSTREAM_BASE.padEnd(48, ' ')}║`);
+  console.log(`║ Referrer:          ${REFERRER_BASE.padEnd(48, ' ')}║`);
+  console.log(`║ Turnstile URL:     ${TURNSTILE_API_URL.substring(0, 46).padEnd(48, ' ')}║`);
+  console.log(`╚══════════════════════════════════════════════════════════╝\n`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('[Queue Service] SIGTERM received, shutting down gracefully...');
-  process.exit(0);
+  console.log('\n[SIGTERM] Graceful shutdown initiated...');
+  server.close(() => {
+    console.log('[SIGTERM] Server closed');
+    process.exit(0);
+  });
 });
+
+process.on('SIGINT', () => {
+  console.log('\n[SIGINT] Graceful shutdown initiated...');
+  server.close(() => {
+    console.log('[SIGINT] Server closed');
+    process.exit(0);
+  });
+});
+
+// Unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Unhandled Rejection]', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]', err);
+  process.exit(1);
+});
+
+export default app;
