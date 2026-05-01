@@ -5,9 +5,16 @@
  * All job management is internal; callers only get a jobId (opaque UUID).
  *
  * Endpoints (all require header: x-queue-secret = QUEUE_SECRET env var):
- *   POST /enqueue          → { jobId }
+ *   POST /enqueue          → { jobId }   body: { ip: string }
  *   GET  /status/:jobId    → { status, position, eta, token? }
- *   POST /cancel/:jobId    → { ok }
+ *   POST /cancel/:jobId    → { ok }      (no-op: IP jobs are never cancelled mid-flight)
+ *
+ * IP deduplication rules:
+ *   - One job per IP at a time. Same IP re-enqueueing while queued/processing
+ *     gets the SAME jobId back (position is preserved, no new slot used).
+ *   - Same IP re-enqueueing after 'done' gets the cached token immediately.
+ *   - Jobs are NEVER removed from the queue on /cancel — solve always
+ *     completes so HuggingFace compute is not wasted. Token stays cached.
  *
  * Environment variables:
  *   QUEUE_SECRET     — shared secret between this service and the Next.js API route
@@ -26,9 +33,9 @@ const crypto = require('crypto');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT           = parseInt(process.env.PORT           || '3000', 10);
-const QUEUE_SECRET   = process.env.QUEUE_SECRET            || 'fucku123';
-const CF_SOLVER_URL  = process.env.CF_SOLVER_URL           || 'https://namikazeminato2892-cloudf.hf.space/cf-clearance-scraper';
-const TURNSTILE_URL  = process.env.TURNSTILE_URL           || 'https://studyspark.study/player';
+const QUEUE_SECRET   = process.env.QUEUE_SECRET            || '';
+const CF_SOLVER_URL  = process.env.CF_SOLVER_URL           || 'https://cf-rp12.onrender.com/cf-clearance-scraper';
+const TURNSTILE_URL  = process.env.TURNSTILE_URL           || 'https://pw-olive-kappa.vercel.app/player';
 const TURNSTILE_KEY  = process.env.TURNSTILE_KEY           || '0x4AAAAAACqytllG1rHL_Acz';
 const JOB_TTL_MS     = parseInt(process.env.JOB_TTL_MS    || '120000', 10);
 const MAX_QUEUE_SIZE = parseInt(process.env.MAX_QUEUE_SIZE || '50',     10);
@@ -41,10 +48,12 @@ if (!QUEUE_SECRET) {
 
 // ── Job store ─────────────────────────────────────────────────────────────────
 // status: 'queued' | 'processing' | 'done' | 'error'
-/** @type {Map<string, {id:string, status:string, createdAt:number, finishedAt?:number, token?:string, errorCode?:string}>} */
+/** @type {Map<string, {id:string, status:string, ip:string, createdAt:number, finishedAt?:number, token?:string, errorCode?:string}>} */
 const jobs = new Map();
 /** @type {string[]} ordered queue of jobIds waiting to run */
 const queue = [];
+/** @type {Map<string, string>} ip → jobId — one active job per IP */
+const ipIndex = new Map();
 
 let isProcessing = false;
 
@@ -56,11 +65,13 @@ function queuePosition(jobId) {
   return idx === -1 ? 0 : idx; // 0 = next up / already processing
 }
 
-/** Clean up old completed/errored jobs */
+/** Clean up old completed/errored jobs and their IP index entries */
 function gc() {
   const cutoff = Date.now() - JOB_TTL_MS;
   for (const [id, job] of jobs) {
     if ((job.status === 'done' || job.status === 'error') && job.finishedAt < cutoff) {
+      // Remove IP index only if it still points to this job
+      if (ipIndex.get(job.ip) === id) ipIndex.delete(job.ip);
       jobs.delete(id);
     }
   }
@@ -163,13 +174,47 @@ const server = http.createServer(async (req, res) => {
 
   // POST /enqueue
   if (method === 'POST' && path === '/enqueue') {
+    let ip = '';
+    try {
+      const body = await readBody(req);
+      ip = (body.ip || '').trim();
+    } catch {
+      return send(res, 400, { error: 'bad_request' });
+    }
+    if (!ip) return send(res, 400, { error: 'ip_required' });
+
+    // ── IP dedup ──────────────────────────────────────────────────────────────
+    const existingJobId = ipIndex.get(ip);
+    if (existingJobId) {
+      const existing = jobs.get(existingJobId);
+      if (existing) {
+        if (existing.status === 'queued' || existing.status === 'processing') {
+          // Still in flight — return same jobId so client resumes its position
+          console.log(`[queue] ip=${ip} rejoined existing job=${existingJobId} status=${existing.status}`);
+          return send(res, 200, { jobId: existingJobId });
+        }
+        if (existing.status === 'done') {
+          // Token already solved — return same jobId; client will read token via /status
+          console.log(`[queue] ip=${ip} reusing cached token job=${existingJobId}`);
+          return send(res, 200, { jobId: existingJobId });
+        }
+        // status === 'error' — fall through to create a fresh job
+        if (ipIndex.get(ip) === existingJobId) ipIndex.delete(ip);
+      } else {
+        // Stale index entry
+        ipIndex.delete(ip);
+      }
+    }
+
     if (queue.length >= MAX_QUEUE_SIZE) {
       return send(res, 429, { error: 'queue_full' });
     }
+
     const jobId = newId();
-    jobs.set(jobId, { id: jobId, status: 'queued', createdAt: Date.now() });
+    jobs.set(jobId, { id: jobId, status: 'queued', ip, createdAt: Date.now() });
+    ipIndex.set(ip, jobId);
     queue.push(jobId);
-    console.log(`[queue] enqueued job=${jobId} qlen=${queue.length}`);
+    console.log(`[queue] enqueued job=${jobId} ip=${ip} qlen=${queue.length}`);
     setImmediate(processNext);
     return send(res, 200, { jobId });
   }
@@ -194,16 +239,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   // POST /cancel/:jobId
+  // No-op by design: we never remove IP jobs from the queue mid-flight.
+  // The solve always completes and the token is cached for when the IP reconnects.
   const cancelMatch = path.match(/^\/cancel\/([0-9a-f-]{36})$/i);
   if (method === 'POST' && cancelMatch) {
-    const jobId = cancelMatch[1];
-    const job   = jobs.get(jobId);
-    if (!job) return send(res, 404, { error: 'not_found' });
-    if (job.status === 'queued') {
-      const idx = queue.indexOf(jobId);
-      if (idx !== -1) queue.splice(idx, 1);
-      jobs.delete(jobId);
-    }
     return send(res, 200, { ok: true });
   }
 
