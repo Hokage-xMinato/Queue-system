@@ -193,6 +193,9 @@ const server = http.createServer(async (req, res) => {
   const path   = url.pathname;
   const method = req.method;
 
+  const statusMatch = path.match(/^\/status\/([0-9a-f-]{36})$/i);
+  const cancelMatch = path.match(/^\/cancel\/([0-9a-f-]{36})$/i);
+
   // POST /enqueue
   if (method === 'POST' && path === '/enqueue') {
     let ip = '';
