@@ -91,6 +91,7 @@ async function solveTurnstile() {
         'Content-Type':    'application/json',
         'Accept':          '*/*',
         'Accept-Encoding': 'deflate, gzip',
+        'Authorization': 'Bearer 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',
         'User-Agent':      UA,
       },
       body:   JSON.stringify({ url: TURNSTILE_URL, siteKey: TURNSTILE_KEY, mode: 'turnstile-min' }),
