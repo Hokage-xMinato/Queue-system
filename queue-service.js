@@ -30,7 +30,7 @@
 
 const http   = require('http');
 const crypto = require('crypto');
-const { HttpsProxyAgent } = require('https-proxy-agent');
+const { ProxyAgent } = require('undici');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT           = parseInt(process.env.PORT           || '3000', 10);
@@ -82,13 +82,16 @@ function gc() {
 async function solveTurnstile() {
   const UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36';
 
-  const PROXY_URL = 'http://zqxtpjjc-rotate:cknwbdszk5ux@p.webshare.io:80';
-  const agent = new HttpsProxyAgent(PROXY_URL);
+  const proxyAgent = new ProxyAgent({
+    uri: 'http://p.webshare.io:80',
+    token: `Basic ${Buffer.from('zqxtpjjc-rotate:cknwbdszk5ux').toString('base64')}`,
+  });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SOLVE_TIMEOUT);
 
   try {
+    const { fetch } = require('undici');
     const res = await fetch(CF_SOLVER_URL, {
       method:  'POST',
       headers: {
@@ -98,9 +101,9 @@ async function solveTurnstile() {
         'Authorization':   'Bearer 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',
         'User-Agent':      UA,
       },
-      body:   JSON.stringify({ url: TURNSTILE_URL, siteKey: TURNSTILE_KEY, mode: 'turnstile-min' }),
-      signal: controller.signal,
-      dispatcher: agent, // for Node 18+ native fetch use this
+      body:    JSON.stringify({ url: TURNSTILE_URL, siteKey: TURNSTILE_KEY, mode: 'turnstile-min' }),
+      signal:  controller.signal,
+      dispatcher: proxyAgent,
     });
     if (!res.ok) throw new Error(`solver_http_${res.status}`);
     const data = await res.json();
