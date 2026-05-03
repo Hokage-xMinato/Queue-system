@@ -278,7 +278,7 @@ const server = http.createServer(async (req, res) => {
   // POST /cancel/:jobId
   // No-op by design: we never remove IP jobs from the queue mid-flight.
   // The solve always completes and the token is cached for when the IP reconnects.
-  const cancelMatch = path.match(/^\/cancel\/([0-9a-f-]{36})$/i);
+  
   if (method === 'POST' && cancelMatch) {
     return send(res, 200, { ok: true });
   }
