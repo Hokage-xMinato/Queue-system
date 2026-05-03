@@ -41,6 +41,7 @@ const TURNSTILE_KEY  = process.env.TURNSTILE_KEY           || '0x4AAAAAACqytllG1
 const JOB_TTL_MS     = parseInt(process.env.JOB_TTL_MS    || '120000', 10);
 const MAX_QUEUE_SIZE = parseInt(process.env.MAX_QUEUE_SIZE || '50',     10);
 const SOLVE_TIMEOUT  = 45_000; // ms — hard timeout per solve attempt
+const TOKEN_TTL_MS     = parseInt(process.env.TOKEN_TTL_MS    || '240000', 10);
 
 if (!QUEUE_SECRET) {
   console.error('[queue] FATAL: QUEUE_SECRET env var is not set');
