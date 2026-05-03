@@ -30,6 +30,7 @@
 
 const http   = require('http');
 const crypto = require('crypto');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT           = parseInt(process.env.PORT           || '3000', 10);
@@ -81,6 +82,9 @@ function gc() {
 async function solveTurnstile() {
   const UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36';
 
+  const PROXY_URL = 'http://zqxtpjjc-rotate:cknwbdszk5ux@p.webshare.io:80';
+  const agent = new HttpsProxyAgent(PROXY_URL);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SOLVE_TIMEOUT);
 
@@ -91,11 +95,12 @@ async function solveTurnstile() {
         'Content-Type':    'application/json',
         'Accept':          '*/*',
         'Accept-Encoding': 'deflate, gzip',
-        'Authorization': 'Bearer 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',
+        'Authorization':   'Bearer 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',
         'User-Agent':      UA,
       },
       body:   JSON.stringify({ url: TURNSTILE_URL, siteKey: TURNSTILE_KEY, mode: 'turnstile-min' }),
       signal: controller.signal,
+      dispatcher: agent, // for Node 18+ native fetch use this
     });
     if (!res.ok) throw new Error(`solver_http_${res.status}`);
     const data = await res.json();
@@ -105,7 +110,6 @@ async function solveTurnstile() {
     clearTimeout(timer);
   }
 }
-
 // ── Queue processor ────────────────────────────────────────────────────────────
 async function processNext() {
   if (isProcessing || queue.length === 0) return;
@@ -140,7 +144,23 @@ async function processNext() {
 
   queue.shift(); // now remove
   isProcessing = false;
-  gc();
+  const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function gc() {
+  const now = Date.now();
+  for (const [id, job] of jobs) {
+    if (job.status === 'done' || job.status === 'error') {
+      const age = now - job.finishedAt;
+      const tokenExpired = job.status === 'done' && age > TOKEN_TTL_MS;
+      const jobExpired   = age > JOB_TTL_MS;
+
+      if (tokenExpired || job.tokenUsed || jobExpired) {
+        if (ipIndex.get(job.ip) === id) ipIndex.delete(job.ip);
+        jobs.delete(id);
+      }
+    }
+  }
+}
   setImmediate(processNext); // process next without growing call stack
 }
 
@@ -221,23 +241,36 @@ const server = http.createServer(async (req, res) => {
   }
 
   // GET /status/:jobId
-  const statusMatch = path.match(/^\/status\/([0-9a-f-]{36})$/i);
   if (method === 'GET' && statusMatch) {
-    const jobId = statusMatch[1];
-    const job   = jobs.get(jobId);
-    if (!job) return send(res, 404, { error: 'not_found' });
+  const jobId = statusMatch[1];
+  const job   = jobs.get(jobId);
+  if (!job) return send(res, 404, { error: 'not_found' });
 
-    const position = queuePosition(jobId);
-    const eta      = position * 20; // 20 s per job estimate
+  const position = queuePosition(jobId);
+  const eta      = position * 20;
 
-    if (job.status === 'done') {
-      return send(res, 200, { status: 'done', token: job.token });
+  if (job.status === 'done') {
+    // Check token age
+    if (Date.now() - job.finishedAt > TOKEN_TTL_MS) {
+      if (ipIndex.get(job.ip) === jobId) ipIndex.delete(job.ip);
+      jobs.delete(jobId);
+      return send(res, 200, { status: 'error', errorCode: 'E_TOKEN_EXPIRED' });
     }
-    if (job.status === 'error') {
-      return send(res, 200, { status: 'error', errorCode: job.errorCode });
+    // Check single use
+    if (job.tokenUsed) {
+      return send(res, 200, { status: 'error', errorCode: 'E_TOKEN_USED' });
     }
-    return send(res, 200, { status: job.status, position, eta });
+    // Mark as used and return token
+    job.tokenUsed = true;
+    return send(res, 200, { status: 'done', token: job.token });
   }
+
+  if (job.status === 'error') {
+    return send(res, 200, { status: 'error', errorCode: job.errorCode });
+  }
+
+  return send(res, 200, { status: job.status, position, eta });
+}
 
   // POST /cancel/:jobId
   // No-op by design: we never remove IP jobs from the queue mid-flight.
