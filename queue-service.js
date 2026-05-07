@@ -15,7 +15,7 @@ const { ProxyAgent } = require('undici');
 const PORT           = parseInt(process.env.PORT           || '3000', 10);
 const QUEUE_SECRET   = process.env.QUEUE_SECRET            || 'fucku123';
 // Support multiple URLs separated by commas
-const CF_SOLVER_URLS = (process.env.CF_SOLVER_URLS         || 'https://yoursxminato-cloudflare.hf.space/cloudflare')
+const CF_SOLVER_URLS = (process.env.CF_SOLVER_URLS         || 'https://yoursxminato-huggingface.hf.space/cloudflare')
                          .split(',')
                          .map(url => url.trim())
                          .filter(url => url.length > 0);
