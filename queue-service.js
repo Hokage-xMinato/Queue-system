@@ -35,7 +35,7 @@ const { ProxyAgent } = require('undici');
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT           = parseInt(process.env.PORT           || '3000', 10);
 const QUEUE_SECRET   = process.env.QUEUE_SECRET            || 'fucku123';
-const CF_SOLVER_URL  = process.env.CF_SOLVER_URL           || 'https://cf-clearance-scraper-znty.onrender.com/cf-clearance-scraper';
+const CF_SOLVER_URL  = process.env.CF_SOLVER_URL           || 'https://yoursxminato-ai-cloud2.hf.space/cf-clearance-scraper';
 const TURNSTILE_URL  = process.env.TURNSTILE_URL           || 'https://studyspark.study/player';
 const TURNSTILE_KEY  = process.env.TURNSTILE_KEY           || '0x4AAAAAACqytllG1rHL_Acz';
 const JOB_TTL_MS     = parseInt(process.env.JOB_TTL_MS    || '120000', 10);
